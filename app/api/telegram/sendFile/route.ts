@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSingleUserClient } from "@/lib/telegram/client";
+import { getSingleUserClient, isFloodWaitError } from "@/lib/telegram/client";
+import { resolveEntity } from "@/lib/telegram/resolve";
+import { sanitizeChatId } from "@/lib/validate";
+import { rateLimit, getClientIp } from "@/lib/rateLimit";
+import { MAX_FILE_SIZE, validateFile } from "@/lib/validate";
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,33 +13,36 @@ export async function POST(req: NextRequest) {
     const file = form.get("file") as File | null;
 
     if (!chatId || !file) return NextResponse.json({ error: "chatId & file required" }, { status: 400 });
+    const vErr = validateFile(file);
+    if (vErr) return NextResponse.json({ error: vErr }, { status: 413 });
+
+    if (caption.length > 1024) return NextResponse.json({ error: "Подпись слишком длинная" }, { status: 400 });
+
+    const ip = getClientIp(req);
+    const rl = rateLimit(`sendFile:${ip}`, 10, 60_000);
+    if (!rl.ok) return NextResponse.json({ error: `Слишком часто. Подожди ${rl.retryAfter}с` }, { status: 429, headers: { "Retry-After": String(rl.retryAfter || 30) } });
 
     const found = await getSingleUserClient();
     if (!found) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     const { client } = found;
 
-    let entity: any = chatId;
-    if (/^-?\d+$/.test(chatId)) {
-      const dialogs = await client.getDialogs({});
-      const match = dialogs.find((d: any) => `-100${d.entity?.id}` === chatId || d.entity?.id?.toString() === chatId.replace("-100",""));
-      if (match) entity = match.entity;
-    } else {
-      try { entity = await client.getEntity(chatId); } catch {}
-    }
-
+    // защита от OOM — уже проверили MAX_FILE_SIZE
+    const entity = await resolveEntity(sanitizeChatId(chatId), client);
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    // GramJS sendFile умеет с Buffer + кастомным атрибутом
     await client.sendFile(entity, {
       file: buffer as any,
       caption: caption || undefined,
-      // @ts-ignore — GramJS примет file как Buffer
       attributes: [],
     } as any);
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, size: buffer.length });
   } catch (e: any) {
     console.error("sendFile error", e);
-    return NextResponse.json({ error: e?.errorMessage || e?.message || "Failed" }, { status: 500 });
+    const fw = isFloodWaitError(e);
+    if (fw) return NextResponse.json({ error: `Флуд-контроль: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
+    const msg = e?.errorMessage || e?.message || "Failed";
+    if (msg.includes("CHAT_WRITE_FORBIDDEN")) return NextResponse.json({ error: "В этом канале нельзя писать" }, { status: 403 });
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

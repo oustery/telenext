@@ -1,31 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSingleUserClient } from "@/lib/telegram/client";
+import { getSingleUserClient, isFloodWaitError } from "@/lib/telegram/client";
+import { resolveEntity } from "@/lib/telegram/resolve";
+import { sanitizeChatId } from "@/lib/validate";
 
 export async function GET(req: NextRequest) {
   try {
-    const chatId = req.nextUrl.searchParams.get("chatId");
-    const limit = Number(req.nextUrl.searchParams.get("limit") || "50");
-    if (!chatId) return NextResponse.json({ error: "chatId required" }, { status: 400 });
+    const chatIdRaw = req.nextUrl.searchParams.get("chatId");
+    if (!chatIdRaw) return NextResponse.json({ error: "chatId required" }, { status: 400 });
+    const chatId = sanitizeChatId(chatIdRaw);
+    const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") || "40"), 100);
+    const offsetId = req.nextUrl.searchParams.get("offsetId") ? Number(req.nextUrl.searchParams.get("offsetId")) : undefined;
 
     const found = await getSingleUserClient();
     if (!found) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     const { client } = found;
 
-    let entity: any = chatId;
-    try {
-      if (/^-?\d+$/.test(chatId)) {
-        const dialogs = await client.getDialogs({});
-        const match = dialogs.find((d: any) => {
-          const eid = d.entity?.id?.toString();
-          return d.id?.toString() === chatId || eid === chatId.replace("-100", "") || `-100${eid}` === chatId;
-        });
-        if (match) entity = match.entity;
-      } else {
-        entity = await client.getEntity(chatId);
-      }
-    } catch {}
+    const entity = await resolveEntity(chatId, client);
 
-    const messages = await client.getMessages(entity, { limit, reverse: false });
+    // Поддержка пагинации: offsetId — загрузить сообщения старше указанного
+    const messages = await client.getMessages(entity, {
+      limit,
+      offsetId: offsetId,
+      reverse: false,
+    } as any);
+
     const me = await client.getMe();
     const myId = me.id.toString();
 
@@ -51,6 +49,7 @@ export async function GET(req: NextRequest) {
         id: m.id,
         text: m.message || "",
         date: m.date ? new Date(m.date * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "",
+        timestamp: m.date || 0,
         out: m.out || m.senderId?.toString() === myId,
         from: m.sender?.firstName || m.sender?.title || undefined,
         media: !!media,
@@ -58,11 +57,18 @@ export async function GET(req: NextRequest) {
         mime,
         fileName,
       };
-    }).reverse();
+    }).reverse(); // старые сверху, новые снизу
 
-    return NextResponse.json({ messages: mapped });
+    const hasMore = messages.length === limit;
+    const nextOffsetId = mapped.length ? mapped[0].id : undefined;
+
+    return NextResponse.json({ messages: mapped, hasMore, nextOffsetId }, {
+      headers: { "Cache-Control": "private, max-age=2" },
+    });
   } catch (e: any) {
     console.error("messages error", e);
+    const fw = isFloodWaitError(e);
+    if (fw) return NextResponse.json({ error: `FloodWait: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
     return NextResponse.json({ error: e?.errorMessage || e?.message || "Failed" }, { status: 500 });
   }
 }

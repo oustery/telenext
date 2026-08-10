@@ -1,32 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSingleUserClient } from "@/lib/telegram/client";
+import { getSingleUserClient, isFloodWaitError } from "@/lib/telegram/client";
+import { resolveEntity } from "@/lib/telegram/resolve";
+import { sanitizeChatId } from "@/lib/validate";
+import { rateLimit, getClientIp } from "@/lib/rateLimit";
 
 export async function POST(req: NextRequest) {
   try {
     const { chatId, message } = await req.json();
-    if (!chatId || !message) return NextResponse.json({ error: "chatId & message required" }, { status: 400 });
+    if (!chatId || !message?.trim()) return NextResponse.json({ error: "chatId & message required" }, { status: 400 });
+    if (message.length > 4096) return NextResponse.json({ error: "Сообщение слишком длинное (макс 4096)" }, { status: 400 });
+
+    const ip = getClientIp(req);
+    const rl = rateLimit(`sendMessage:${ip}`, 20, 60_000);
+    if (!rl.ok) return NextResponse.json({ error: `Слишком часто. Подожди ${rl.retryAfter}с` }, { status: 429, headers: { "Retry-After": String(rl.retryAfter || 30) } });
 
     const found = await getSingleUserClient();
     if (!found) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     const { client } = found;
 
-    let entity: any = chatId;
-    if (/^-?\d+$/.test(chatId)) {
-      const dialogs = await client.getDialogs({});
-      const match = dialogs.find((d: any) => `-100${d.entity?.id}` === chatId || d.entity?.id?.toString() === chatId.replace("-100",""));
-      if (match) entity = match.entity;
-    } else {
-      try { entity = await client.getEntity(chatId); } catch {}
-    }
+    const entity = await resolveEntity(sanitizeChatId(chatId), client);
 
-    const sent = await client.sendMessage(entity, { message });
+    const sent = await client.sendMessage(entity, { message: message.trim() });
 
     return NextResponse.json({ ok: true, id: (sent as any).id });
   } catch (e: any) {
     console.error("sendMessage error", e);
+    const fw = isFloodWaitError(e);
+    if (fw) return NextResponse.json({ error: `Флуд-контроль: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
     const msg = e?.errorMessage || e?.message || "Failed";
-    if (msg.includes("FLOOD_WAIT")) {
-      return NextResponse.json({ error: `Флуд-контроль: ${msg}. Подожди.` }, { status: 429 });
+    if (msg.includes("CHAT_WRITE_FORBIDDEN") || msg.includes("CHAT_RESTRICTED")) {
+      return NextResponse.json({ error: "В этом канале нельзя писать" }, { status: 403 });
     }
     return NextResponse.json({ error: msg }, { status: 500 });
   }

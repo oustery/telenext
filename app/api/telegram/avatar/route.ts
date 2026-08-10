@@ -1,35 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSingleUserClient } from "@/lib/telegram/client";
+import { getSingleUserClient, isFloodWaitError } from "@/lib/telegram/client";
+import { resolveEntity } from "@/lib/telegram/resolve";
+import { sanitizeChatId } from "@/lib/validate";
 
 export async function GET(req: NextRequest) {
   try {
-    const chatId = req.nextUrl.searchParams.get("chatId");
-    if (!chatId) return NextResponse.json({ error: "chatId required" }, { status: 400 });
+    const chatIdRaw = req.nextUrl.searchParams.get("chatId");
+    if (!chatIdRaw) return NextResponse.json({ error: "chatId required" }, { status: 400 });
+    const chatId = sanitizeChatId(chatIdRaw);
 
     const found = await getSingleUserClient();
     if (!found) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     const { client } = found;
 
-    let entity: any = chatId;
-    try {
-      if (/^-?\d+$/.test(chatId)) {
-        const dialogs = await client.getDialogs({});
-        const match = dialogs.find((d: any) => {
-          const eid = d.entity?.id?.toString();
-          return d.id?.toString() === chatId || eid === chatId.replace("-100", "") || `-100${eid}` === chatId;
-        });
-        if (match) entity = match.entity;
-        else entity = await client.getEntity(chatId as any);
-      } else {
-        entity = await client.getEntity(chatId);
-      }
-    } catch {}
+    const entity = await resolveEntity(chatId, client);
 
     try {
-      const buffer: Buffer = await client.downloadProfilePhoto(entity) as any;
-      if (!buffer || buffer.length === 0) {
-        return new NextResponse(null, { status: 404 });
-      }
+      const buffer: Buffer = await client.downloadProfilePhoto(entity, { isBig: false } as any) as any;
+      if (!buffer || buffer.length === 0) return new NextResponse(null, { status: 404 });
       return new NextResponse(buffer as any, {
         headers: {
           "Content-Type": "image/jpeg",
@@ -38,11 +26,14 @@ export async function GET(req: NextRequest) {
         },
       });
     } catch (e: any) {
-      // No photo
+      const fw = isFloodWaitError(e);
+      if (fw) return NextResponse.json({ error: `FloodWait: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
       return new NextResponse(null, { status: 404 });
     }
   } catch (e: any) {
     console.error("avatar error", e);
+    const fw = isFloodWaitError(e);
+    if (fw) return NextResponse.json({ error: `FloodWait` }, { status: 429, headers: { "Retry-After": String(fw) } });
     return NextResponse.json({ error: e?.message || "Failed" }, { status: 500 });
   }
 }
