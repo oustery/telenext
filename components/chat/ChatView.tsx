@@ -2,6 +2,8 @@
 import { useEffect, useState, useRef, useCallback, memo } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import type { Dialog } from "../Messenger";
+import { putMessages, getMessagesCache } from "@/lib/db";
+import { putMessages, getMessagesCache } from "@/lib/db";
 
 type Msg = {
   id: number;
@@ -201,6 +203,15 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
   const loadInitial = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
+    // Мгновенный показ кэша для оффлайна и скорости
+    const cached = await getMessagesCache(dialog.id);
+    if (cached && cached.length) {
+      setMessages(cached as any);
+      setHasMore(false);
+      firstIdx.current = 10000 - cached.length;
+      setLoading(false);
+      if (!navigator.onLine) return;
+    }
     try {
       const c = new AbortController();
       const t = setTimeout(() => c.abort(), 10000);
@@ -208,10 +219,17 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
       clearTimeout(t);
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || `Ошибка ${r.status}`);
-      setMessages(d.messages || []);
+      const list = d.messages || [];
+      setMessages(list);
       setHasMore(!!d.hasMore);
-      firstIdx.current = 10000 - (d.messages?.length || 0);
+      firstIdx.current = 10000 - list.length;
+      if (list.length) putMessages(dialog.id, list);
     } catch (e: any) {
+      if (cached && cached.length) {
+        setLoadError(null);
+        setLoading(false);
+        return;
+      }
       setLoadError(e?.name === "AbortError" ? "Превышено время ожидания" : e?.message || "Не удалось загрузить");
     } finally {
       setLoading(false);
@@ -225,7 +243,7 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
       const r = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=30&offsetId=${messages[0].id}`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
       if (r.ok && d.messages?.length) {
-        setMessages((prev) => [...d.messages, ...prev]);
+        setMessages((prev) => { const merged=[...d.messages, ...prev]; putMessages(dialog.id, merged.slice(-300)); return merged; });
         setHasMore(!!d.hasMore);
         firstIdx.current -= d.messages.length;
       } else setHasMore(false);

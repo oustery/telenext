@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import ChatList from "./chat/ChatList";
 import ChatView from "./chat/ChatView";
+import { putDialogs, getDialogsCache } from "@/lib/db";
 
 export type Dialog = {
   id: string;
@@ -31,6 +32,7 @@ export default function Messenger() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<Tab>("all");
+  const [isOffline, setIsOffline] = useState(false);
 
   async function loadDialogs(showLoader = false) {
     if (showLoader) setLoading(true);
@@ -42,17 +44,48 @@ export default function Messenger() {
         if (res.status === 401) { location.href = "/login"; return; }
         throw new Error(data.error || "Ошибка загрузки");
       }
-      setDialogs(data.dialogs || []);
+      const list = data.dialogs || [];
+      setDialogs(list);
+      // кэшируем для оффлайн
+      putDialogs(list);
+      setIsOffline(false);
     } catch (e: any) {
-      setError(e.message || "Нет соединения");
+      // оффлайн — пробуем из IndexedDB
+      const cached = await getDialogsCache();
+      if (cached && cached.length) {
+        setDialogs(cached);
+        setIsOffline(true);
+        setError(null);
+      } else {
+        setError(e.message || "Нет соединения");
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => { loadDialogs(true); }, []);
   useEffect(() => {
-    const id = setInterval(() => loadDialogs(false), 8000);
+    // сразу пробуем кэш для мгновенного показа
+    getDialogsCache().then(cached => {
+      if (cached && cached.length) {
+        setDialogs(cached);
+        setLoading(false);
+      }
+    });
+    loadDialogs(true);
+    // слушаем онлайн/оффлайн
+    const onOnline = () => { setIsOffline(false); loadDialogs(false); };
+    const onOffline = () => setIsOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => { if (!document.hidden) loadDialogs(false); }, 8000);
     return () => clearInterval(id);
   }, []);
 
@@ -75,7 +108,7 @@ export default function Messenger() {
       {/* Sidebar */}
       <div className={`flex flex-col bg-white border-r border-[#e6e8eb] w-full md:w-[360px] md:min-w-[320px] shrink-0 ${selected ? "hidden md:flex" : "flex"}`}>
         {/* Header */}
-        <div className="px-4 pt-4 pb-3 border-b border-[#f0f2f5]">
+        <div className="px-4 pt-4 pb-3 border-b border-[#f0f2f5] shrink-0">
           <div className="flex items-center justify-between mb-3">
             <h1 className="text-[20px] font-bold tracking-tight">Чаты</h1>
             <button onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); location.href="/login"; }} className="text-[13px] text-[#2481cc] hover:text-[#1a6fb5]">Выйти</button>
@@ -90,10 +123,11 @@ export default function Messenger() {
             />
             {search && <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full hover:bg-black/5 flex items-center justify-center text-[#8e8e93]">✕</button>}
           </div>
+          {isOffline && <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1 inline-flex items-center gap-1">● Оффлайн — показаны кэшированные чаты</div>}
         </div>
 
-        {/* Tabs — простые, понятные */}
-        <div className="px-2 py-2 flex gap-1 overflow-x-auto scrollbar-none border-b border-[#f0f2f5]">
+        {/* Tabs */}
+        <div className="px-2 py-2 flex gap-1 overflow-x-auto scrollbar-none border-b border-[#f0f2f5] shrink-0">
           {TABS.map(t => {
             const active = activeTab === t.id;
             return (
@@ -108,8 +142,8 @@ export default function Messenger() {
           })}
         </div>
 
-        {/* List */}
-        <div className="flex-1 overflow-y-auto">
+        {/* List — virtual scroll */}
+        <div className="flex-1 min-h-0 bg-white">
           {loading ? (
             <div className="p-4 space-y-3">
               {[1,2,3].map(i => <div key={i} className="h-14 bg-[#f0f2f5] rounded-xl animate-pulse" />)}
@@ -128,14 +162,14 @@ export default function Messenger() {
       </div>
 
       {/* Chat */}
-      <div className={`flex-1 flex flex-col bg-[#f5f7fb] min-w-0 ${!selected ? "hidden md:flex" : "flex"}`}>
+      <div className={`flex-1 flex flex-col bg-[#f5f7fb] min-w-0 min-h-0 ${!selected ? "hidden md:flex" : "flex"}`}>
         {selected ? (
           <ChatView dialog={selected} onBack={() => setSelectedId(null)} />
         ) : (
           <div className="flex-1 hidden md:flex flex-col items-center justify-center p-8 text-center">
             <div className="w-16 h-16 rounded-2xl bg-white border border-[#e6e8eb] flex items-center justify-center text-2xl mb-4">💬</div>
             <div className="font-semibold">Выберите чат</div>
-            <div className="text-sm text-[#8e8e93] mt-1 max-w-sm">Откройте диалог слева чтобы начать общение. Каналы — только для чтения.</div>
+            <div className="text-sm text-[#8e8e93] mt-1 max-w-sm">Откройте диалог слева. В оффлайне доступны кэшированные сообщения.</div>
           </div>
         )}
       </div>
