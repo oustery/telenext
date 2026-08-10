@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tg-bg: #17212b;
+  --tg-panel: #17212b;
+  --tg-hover: #202e3a;
+  --tg-active: #2b5278;
+}
+
+html, body {
+  height: 100%;
+  background: var(--tg-bg);
+  color: #f5f5f5;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2b5278 transparent;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2b5278;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
