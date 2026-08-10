@@ -3,40 +3,30 @@
 @tailwind utilities;
 
 :root {
-  --tg-bg: #efeff3;
-  --tg-panel: #ffffff;
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --border: #e6e8eb;
+  --accent: #2481cc;
+  --accent-hover: #1a6fb5;
 }
 
 html {
   height: 100%;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Text", system-ui, sans-serif;
 }
 
 body {
   height: 100%;
-  background: var(--tg-bg);
+  background: var(--bg);
   color: #0f1419;
   overscroll-behavior: none;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0,0,0,0.15) transparent;
-}
+* { scrollbar-width: thin; scrollbar-color: #d1d5db transparent; }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 6px; }
-.dark ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); }
-
-.scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }
+::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-none::-webkit-scrollbar { display: none; }
-
-/* iOS tap highlight */
-* { -webkit-tap-highlight-color: rgba(0,122,255,0.15); }
-
-/* Fix 100dvh for iOS */
-@supports (height: 100dvh) {
-  .h-\[100dvh\] { height: 100dvh; }
-}
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+* { -webkit-tap-highlight-color: rgba(36,129,204,0.15); }
