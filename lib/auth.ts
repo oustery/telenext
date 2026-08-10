@@ -8,7 +8,7 @@ export async function createSessionToken(payload: { userId: string; phone: strin
   return await new SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("30d")
+    .setExpirationTime("365d")
     .sign(secret);
 }
 
@@ -24,7 +24,9 @@ export async function setSessionCookie(token: string) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: 60 * 60 * 24 * 365, // 1 год
+    // для iOS Safari: также ставим expires
+    expires: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
   });
 }
 
