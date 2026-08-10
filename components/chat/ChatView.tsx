@@ -346,7 +346,7 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
             <textarea ref={inputRef} value={text} onChange={e => { setText(e.target.value); adjustHeight(e.target as HTMLTextAreaElement); }} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder={uploading ? "Загрузка..." : "Сообщение"} rows={1} disabled={uploading} className="flex-1 bg-transparent px-3 py-[7px] text-[15px] leading-5 outline-none resize-none max-h-[120px] placeholder:text-[#8e8e93] dark:placeholder:text-[#7d8b99] disabled:opacity-50" style={{ height: 32 }} />
             <button className="w-7 h-7 rounded-full text-[#8e8e93] dark:text-[#7d8b99] hover:text-[#0f1419] dark:hover:text-white flex items-center justify-center shrink-0 mr-0.5">☺</button>
           </div>
-          <button onClick={send} disabled={!text.trim() || sending || uploading} className={`w-9 h-9 rounded-full flex items-center justify-center text-white shadow-sm active:scale-95 transition shrink-0 ${!text.trim() || sending || uploading ? "bg-[#c7c7cc] dark:bg-white/15" : "bg-[#0a84ff] dark:bg-[#2b5278]"}`} aria-label="Отправить"><span className="text-[16px] translate-x-px">↑</span></button>
+          <button onClick={() => send()} disabled={!text.trim() || sending || uploading} className={`w-9 h-9 rounded-full flex items-center justify-center text-white shadow-sm active:scale-95 transition shrink-0 ${!text.trim() || sending || uploading ? "bg-[#c7c7cc] dark:bg-white/15" : "bg-[#0a84ff] dark:bg-[#2b5278]"}`} aria-label="Отправить"><span className="text-[16px] translate-x-px">↑</span></button>
         </div>
       )}
     </div>
