@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSingleUserClient, isFloodWaitError } from "@/lib/telegram/client";
+import { getSingleUserClient, isFloodWaitError, destroyClient } from "@/lib/telegram/client";
 import { resolveEntity } from "@/lib/telegram/resolve";
 import { sanitizeChatId } from "@/lib/validate";
 
+function isAuthKeyDuplicated(e: any): boolean {
+  const msg = e?.errorMessage || e?.message || String(e);
+  return msg.includes("AUTH_KEY_DUPLICATED") || msg.includes("AuthKeyDuplicated");
+}
+
 export async function GET(req: NextRequest) {
+  let userId: string | null = null;
   try {
     const chatIdRaw = req.nextUrl.searchParams.get("chatId");
     if (!chatIdRaw) return NextResponse.json({ error: "chatId required" }, { status: 400 });
@@ -13,11 +19,11 @@ export async function GET(req: NextRequest) {
 
     const found = await getSingleUserClient();
     if (!found) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    userId = found.user.id;
     const { client } = found;
 
     const entity = await resolveEntity(chatId, client);
 
-    // Поддержка пагинации: offsetId — загрузить сообщения старше указанного
     const messages = await client.getMessages(entity, {
       limit,
       offsetId: offsetId,
@@ -57,7 +63,7 @@ export async function GET(req: NextRequest) {
         mime,
         fileName,
       };
-    }).reverse(); // старые сверху, новые снизу
+    }).reverse();
 
     const hasMore = messages.length === limit;
     const nextOffsetId = mapped.length ? mapped[0].id : undefined;
@@ -67,6 +73,10 @@ export async function GET(req: NextRequest) {
     });
   } catch (e: any) {
     console.error("messages error", e);
+    if (isAuthKeyDuplicated(e)) {
+      if (userId) try { await destroyClient(userId); } catch {}
+      return NextResponse.json({ error: "AUTH_KEY_DUPLICATED: параллельный запрос. Попробуй снова через 2с." }, { status: 429, headers: { "Retry-After": "2" } });
+    }
     const fw = isFloodWaitError(e);
     if (fw) return NextResponse.json({ error: `FloodWait: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
     return NextResponse.json({ error: e?.errorMessage || e?.message || "Failed" }, { status: 500 });

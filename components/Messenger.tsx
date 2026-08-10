@@ -12,6 +12,7 @@ export type Dialog = {
   isChannel: boolean;
   isGroup: boolean;
   date?: string;
+  avatar?: string | null;
 };
 
 type Tab = "all" | "personal" | "groups" | "channels";
@@ -51,7 +52,8 @@ export default function Messenger() {
 
   useEffect(() => { loadDialogs(true); }, []);
   useEffect(() => {
-    const id = setInterval(() => loadDialogs(false), 4000);
+    // Уменьшили частоту чтобы не триггерить AUTH_KEY_DUPLICATED параллельными коннектами
+    const id = setInterval(() => loadDialogs(false), 8000);
     return () => clearInterval(id);
   }, []);
 

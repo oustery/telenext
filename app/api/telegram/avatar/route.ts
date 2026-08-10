@@ -26,12 +26,16 @@ export async function GET(req: NextRequest) {
         },
       });
     } catch (e: any) {
+      const msg = e?.errorMessage || e?.message || String(e);
+      if (msg.includes("AUTH_KEY_DUPLICATED")) return new NextResponse(null, { status: 429, headers: { "Retry-After": "2" } } as any);
       const fw = isFloodWaitError(e);
       if (fw) return NextResponse.json({ error: `FloodWait: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
       return new NextResponse(null, { status: 404 });
     }
   } catch (e: any) {
     console.error("avatar error", e);
+    const msg = e?.errorMessage || e?.message || String(e);
+    if (msg.includes("AUTH_KEY_DUPLICATED")) return NextResponse.json({ error: "AUTH_KEY_DUPLICATED" }, { status: 429, headers: { "Retry-After": "2" } });
     const fw = isFloodWaitError(e);
     if (fw) return NextResponse.json({ error: `FloodWait` }, { status: 429, headers: { "Retry-After": String(fw) } });
     return NextResponse.json({ error: e?.message || "Failed" }, { status: 500 });

@@ -50,6 +50,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (e: any) {
     console.error("media error", e);
+    const msg = e?.errorMessage || e?.message || String(e);
+    if (msg.includes("AUTH_KEY_DUPLICATED")) return NextResponse.json({ error: "AUTH_KEY_DUPLICATED" }, { status: 429, headers: { "Retry-After": "2" } });
     const fw = isFloodWaitError(e);
     if (fw) return NextResponse.json({ error: `FloodWait: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
     return NextResponse.json({ error: e?.errorMessage || e?.message || "Failed" }, { status: 500 });

@@ -2,21 +2,23 @@ import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { decrypt } from "@/lib/crypto";
 
-// Для single-user храним всё в зашифрованной StringSession в БД.
-// На Vercel каждая лямбда — отдельный процесс, поэтому Map живёт только внутри одного воркера.
-// Делаем кэш в globalThis с TTL 90с — если один воркер обслужил два запроса подряд, переиспользуем соединение и экономим 2-3с на connect().
-
 type Cached = { client: TelegramClient; lastUsed: number };
 
 const globalKey = "__telenext_pool" as const;
 const globalForPool = globalThis as unknown as { [globalKey]?: Map<string, Cached> };
+const pendingKey = "__telenext_pending" as const;
+const globalForPending = globalThis as unknown as { [pendingKey]?: Map<string, Promise<TelegramClient>> };
 
 function getPool(): Map<string, Cached> {
   if (!globalForPool[globalKey]) globalForPool[globalKey] = new Map();
   return globalForPool[globalKey]!;
 }
+function getPending(): Map<string, Promise<TelegramClient>> {
+  if (!globalForPending[pendingKey]) globalForPending[pendingKey] = new Map();
+  return globalForPending[pendingKey]!;
+}
 
-// Периодически чистим старые соединения (раз в 60с)
+// Чистим старые соединения раз в 60с
 if (typeof setInterval !== "undefined" && !(globalThis as any).__telenext_pool_cleaner) {
   (globalThis as any).__telenext_pool_cleaner = setInterval(() => {
     const pool = getPool();
@@ -30,7 +32,6 @@ if (typeof setInterval !== "undefined" && !(globalThis as any).__telenext_pool_c
   }, 60_000).unref?.();
 }
 
-// Временные клиенты для логина (до сохранения сессии) — тоже в globalThis чтобы переживать hot-reload
 const tempKey = "__telenext_temp" as const;
 const globalForTemp = globalThis as unknown as { [tempKey]?: Map<string, TelegramClient> };
 function getTempPool() {
@@ -70,39 +71,109 @@ export function getTempClient(phone: string) {
 export function deleteTempClient(phone: string) {
   const pool = getTempPool();
   const c = pool.get(phone);
-  if (c) {
-    try { c.destroy(); } catch {}
-    pool.delete(phone);
-  }
+  if (c) { try { c.destroy(); } catch {} pool.delete(phone); }
 }
 
-export async function getAuthedClient(userId: string, sessionEnc: string) {
+function isAuthKeyDuplicated(e: any): boolean {
+  const msg = e?.errorMessage || e?.message || String(e);
+  return msg.includes("AUTH_KEY_DUPLICATED") || msg.includes("AuthKeyDuplicated");
+}
+
+export function isFloodWaitError(e: any): number | null {
+  const msg = e?.errorMessage || e?.message || String(e);
+  const m = msg.match(/FLOOD_WAIT_(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  if (typeof e?.seconds === "number") return e.seconds;
+  return null;
+}
+
+export function isAuthKeyError(e: any): boolean {
+  return isAuthKeyDuplicated(e) || (e?.errorMessage || "").includes("AUTH_KEY");
+}
+
+async function createAuthedClient(userId: string, sessionEnc: string): Promise<TelegramClient> {
+  const { apiId, apiHash } = getApiCredentials();
+  const sessionStr = decrypt(sessionEnc);
+  const session = new StringSession(sessionStr);
+  const client = new TelegramClient(session, apiId, apiHash, {
+    connectionRetries: 3,
+    useWSS: true,
+    floodSleepThreshold: 60,
+    // важно: не даём TelegramClient самому ретраить AUTH_KEY_DUPLICATED бесконечно
+  });
+  // Пробуем connect с ретраем при AUTH_KEY_DUPLICATED
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await client.connect();
+      return client;
+    } catch (e: any) {
+      if (isAuthKeyDuplicated(e) && attempt === 0) {
+        console.warn(`AUTH_KEY_DUPLICATED for ${userId}, retrying after 1.5s...`, e?.message);
+        try { await client.destroy(); } catch {}
+        // ждём чтобы старый коннект на другом лямбда-воркере освободился
+        await new Promise(r => setTimeout(r, 1500));
+        // пробуем ещё раз с новой сессией (той же, но новый объект)
+        const session2 = new StringSession(sessionStr);
+        const client2 = new TelegramClient(session2, apiId, apiHash, {
+          connectionRetries: 3,
+          useWSS: true,
+          floodSleepThreshold: 60,
+        });
+        try {
+          await client2.connect();
+          return client2;
+        } catch (e2: any) {
+          if (isAuthKeyDuplicated(e2)) {
+            // если снова дубликат — отдаём ошибку чтобы фронт показал ретрай
+            throw e2;
+          }
+          throw e2;
+        }
+      }
+      throw e;
+    }
+  }
+  throw new Error("Failed to connect");
+}
+
+export async function getAuthedClient(userId: string, sessionEnc: string): Promise<TelegramClient> {
   const pool = getPool();
+  const pending = getPending();
+
+  // Если уже есть коннект — переиспользуем
   const cached = pool.get(userId);
   if (cached && cached.client.connected) {
     cached.lastUsed = Date.now();
     return cached.client;
   }
-  // чистим мёртвый
   if (cached) {
     try { await cached.client.destroy(); } catch {}
     pool.delete(userId);
   }
-  const { apiId, apiHash } = getApiCredentials();
-  const sessionStr = decrypt(sessionEnc);
-  const session = new StringSession(sessionStr);
-  const client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 5,
-    useWSS: true,
-    floodSleepThreshold: 60,
-  });
-  await client.connect();
-  pool.set(userId, { client, lastUsed: Date.now() });
-  return client;
+
+  // Если уже идёт создание клиента для этого userId — ждём тот же промис (дедупликация коннектов)
+  if (pending.has(userId)) {
+    return pending.get(userId)!;
+  }
+
+  const promise = (async () => {
+    try {
+      const client = await createAuthedClient(userId, sessionEnc);
+      pool.set(userId, { client, lastUsed: Date.now() });
+      return client;
+    } finally {
+      pending.delete(userId);
+    }
+  })();
+
+  pending.set(userId, promise);
+  return promise;
 }
 
 export async function destroyClient(userId: string) {
   const pool = getPool();
+  const pending = getPending();
+  pending.delete(userId);
   const c = pool.get(userId);
   if (c) {
     try { await c.client.destroy(); } catch {}
@@ -110,20 +181,10 @@ export async function destroyClient(userId: string) {
   }
 }
 
-// Single-user helper — достаёт единственного юзера и возвращает клиента (переиспользует кэш)
 export async function getSingleUserClient() {
   const { prisma } = await import("@/lib/prisma");
   const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
   if (!user) return null;
   const client = await getAuthedClient(user.id, user.sessionEnc);
   return { user, client };
-}
-
-// Удобный wrapper для одноразовых операций с авто-коннектом и обработкой FloodWait
-export function isFloodWaitError(e: any): number | null {
-  const msg = e?.errorMessage || e?.message || String(e);
-  const m = msg.match(/FLOOD_WAIT_(\d+)/i);
-  if (m) return parseInt(m[1], 10);
-  if (typeof e?.seconds === "number") return e.seconds;
-  return null;
 }

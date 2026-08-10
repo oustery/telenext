@@ -6,10 +6,25 @@ function Avatar({ dialog }: { dialog: Dialog }) {
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const initials = dialog.title.trim().slice(0, 2).toUpperCase() || "??";
-  // детерминированный градиент по id
   const hue = Math.abs(dialog.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0)) % 360;
   const bg = dialog.isChannel ? `hsl(${hue} 70% 45%)` : dialog.isGroup ? `hsl(${hue} 60% 50%)` : `hsl(${hue} 75% 55%)`;
 
+  // если бэкенд уже отдал base64 аватар — используем его, без доп. запроса (критично для AUTH_KEY_DUPLICATED)
+  if (dialog.avatar && !error) {
+    return (
+      <div className="w-[52px] h-[52px] rounded-full overflow-hidden shrink-0 relative bg-black/5 dark:bg-white/10 flex items-center justify-center">
+        <img
+          src={dialog.avatar}
+          alt={dialog.title}
+          className="w-full h-full object-cover"
+          loading="lazy"
+          onError={() => setError(true)}
+        />
+      </div>
+    );
+  }
+
+  // fallback: пробуем отдельный /avatar (кэшируется), но с ошибкой — показываем инициалы
   if (error) {
     return (
       <div className="w-[52px] h-[52px] rounded-full flex items-center justify-center text-white text-[15px] font-semibold shrink-0" style={{ background: bg }}>
@@ -20,7 +35,6 @@ function Avatar({ dialog }: { dialog: Dialog }) {
 
   return (
     <div className="w-[52px] h-[52px] rounded-full overflow-hidden shrink-0 relative bg-black/5 dark:bg-white/10 flex items-center justify-center">
-      {/* Fallback initials пока грузится */}
       {!loaded && (
         <div className="absolute inset-0 flex items-center justify-center text-white text-[15px] font-semibold" style={{ background: bg }}>
           {initials}
@@ -34,10 +48,6 @@ function Avatar({ dialog }: { dialog: Dialog }) {
         onLoad={() => setLoaded(true)}
         onError={() => setError(true)}
       />
-      {/* онлайн индикатор для личек */}
-      {!dialog.isChannel && !dialog.isGroup && (
-        <span className="absolute -right-0.5 -bottom-0.5 w-3.5 h-3.5 rounded-full bg-[#34c759] border-[2.5px] border-white dark:border-[#17212b] hidden" />
-      )}
     </div>
   );
 }
@@ -94,7 +104,6 @@ export default function ChatList({ dialogs, selectedId, onSelect }: {
                 </span>
               </div>
             </div>
-            {/* iOS separator */}
             <span className={`absolute left-[76px] right-0 bottom-0 h-px ${isSelected ? "bg-transparent" : "bg-black/[0.06] dark:bg-white/[0.06]"} hidden md:block`} />
           </button>
         );

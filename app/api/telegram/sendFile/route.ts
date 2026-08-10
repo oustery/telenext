@@ -39,9 +39,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, size: buffer.length });
   } catch (e: any) {
     console.error("sendFile error", e);
+    const msg = e?.errorMessage || e?.message || String(e);
+    if (msg.includes("AUTH_KEY_DUPLICATED")) return NextResponse.json({ error: "AUTH_KEY_DUPLICATED: попробуй снова через 2с" }, { status: 429, headers: { "Retry-After": "2" } });
     const fw = isFloodWaitError(e);
     if (fw) return NextResponse.json({ error: `Флуд-контроль: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
-    const msg = e?.errorMessage || e?.message || "Failed";
     if (msg.includes("CHAT_WRITE_FORBIDDEN")) return NextResponse.json({ error: "В этом канале нельзя писать" }, { status: 403 });
     return NextResponse.json({ error: msg }, { status: 500 });
   }

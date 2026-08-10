@@ -85,19 +85,22 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
     }
   }, [dialog.id, messages, hasMore, loadingMore]);
 
-  // Poll for new messages (only tail)
+  // Poll for new messages (only tail) — с защитой от AUTH_KEY_DUPLICATED (429)
   const pollNew = useCallback(async () => {
     if (loading || loadingMore) return;
     try {
-      const res = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=20`);
-      const data = await res.json();
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=20`, { signal: controller.signal, cache: "no-store" });
+      clearTimeout(t);
+      if (res.status === 429) return; // FloodWait / AUTH_KEY_DUPLICATED — тихо ждём следующий тик
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.messages?.length) {
         const incoming: Msg[] = data.messages;
         setMessages(prev => {
           const ids = new Set(prev.map(m => m.id));
           const newOnes = incoming.filter(m => !ids.has(m.id));
           if (newOnes.length === 0) return prev;
-          // incoming уже отсортированы старые->новые, берём только те что новее последнего
           const maxId = Math.max(...prev.map(m => m.id), 0);
           const toAdd = newOnes.filter(m => m.id > maxId);
           if (toAdd.length === 0) return prev;
@@ -116,7 +119,11 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
   }, [loadInitial]);
 
   useEffect(() => {
-    const id = setInterval(pollNew, 4000);
+    // 6с + не поллим если вкладка не видна (экономим коннекты)
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      pollNew();
+    }, 6000);
     return () => clearInterval(id);
   }, [pollNew]);
 
@@ -124,7 +131,7 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
     if (!isChannel && window.innerWidth > 768) inputRef.current?.focus();
   }, [dialog.id, isChannel]);
 
-  async function send() {
+  async function send(retry = false) {
     if (!text.trim() || isChannel) return;
     const optimistic: Msg = {
       id: Date.now(),
@@ -139,19 +146,39 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
     setMessages(prev => [...prev, optimistic]);
     setSending(true);
     try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 15000);
       const res = await fetch("/api/telegram/sendMessage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chatId: dialog.id, message: toSend }),
+        signal: controller.signal,
       });
+      clearTimeout(t);
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const d = await res.json();
+        // При AUTH_KEY_DUPLICATED — тихо ретраим один раз через 2с без алерта
+        if (res.status === 429 && (data.error || "").includes("AUTH_KEY_DUPLICATED") && !retry) {
+          setMessages(prev => prev.filter(m => m.id !== optimistic.id));
+          await new Promise(r => setTimeout(r, 2200));
+          setText(toSend);
+          // рекурсивно пробуем ещё раз
+          setTimeout(() => send(true), 0);
+          return;
+        }
         setMessages(prev => prev.filter(m => m.id !== optimistic.id));
-        alert(d.error || "Ошибка отправки");
+        // Для 429 показываем мягкое уведомление, для остальных — алерт
+        if (res.status === 429) alert(data.error || "Слишком часто, подожди 2с");
+        else alert(data.error || "Ошибка отправки");
+        setText(toSend);
       } else {
-        // перезапросим чтобы получить реальный id/дату с сервера
         setTimeout(pollNew, 600);
       }
+    } catch (e: any) {
+      setMessages(prev => prev.filter(m => m.id !== optimistic.id));
+      if (e?.name === "AbortError") alert("Таймаут отправки, попробуй ещё раз");
+      else alert(e?.message || "Ошибка сети");
+      setText(toSend);
     } finally { setSending(false); }
   }
 
@@ -199,7 +226,9 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
         <div className="h-[52px] px-3 flex items-center gap-3">
           {onBack && <button onClick={onBack} className="md:hidden -ml-1 w-8 h-8 flex items-center justify-center rounded-full hover:bg-black/5 dark:hover:bg-white/10 text-[#0a84ff] dark:text-[#40a7e3] text-[22px] leading-none">‹</button>}
           <div className="w-9 h-9 rounded-full overflow-hidden bg-black/5 dark:bg-white/10 flex items-center justify-center shrink-0 relative">
-            {!avatarError ? (
+            {!avatarError && dialog.avatar ? (
+              <img src={dialog.avatar} alt={dialog.title} className="w-full h-full object-cover" onError={() => setAvatarError(true)} />
+            ) : !avatarError ? (
               <img src={`/api/telegram/avatar?chatId=${encodeURIComponent(dialog.id)}`} alt={dialog.title} className="w-full h-full object-cover" onError={() => setAvatarError(true)} />
             ) : (
               <span className="text-[12px] font-bold text-white w-full h-full flex items-center justify-center" style={{ background: `hsl(${Math.abs(dialog.id.length*47)%360} 70% 45%)` }}>{dialog.title.slice(0,2).toUpperCase()}</span>

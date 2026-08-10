@@ -5,6 +5,7 @@ import { sanitizeChatId } from "@/lib/validate";
 import { rateLimit, getClientIp } from "@/lib/rateLimit";
 
 export async function POST(req: NextRequest) {
+  let userId: string | null = null;
   try {
     const { chatId, message } = await req.json();
     if (!chatId || !message?.trim()) return NextResponse.json({ error: "chatId & message required" }, { status: 400 });
@@ -16,6 +17,7 @@ export async function POST(req: NextRequest) {
 
     const found = await getSingleUserClient();
     if (!found) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    userId = found.user.id;
     const { client } = found;
 
     const entity = await resolveEntity(sanitizeChatId(chatId), client);
@@ -25,9 +27,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, id: (sent as any).id });
   } catch (e: any) {
     console.error("sendMessage error", e);
+    const msg = e?.errorMessage || e?.message || String(e);
+    if (msg.includes("AUTH_KEY_DUPLICATED")) {
+      if (userId) try { const { destroyClient } = await import("@/lib/telegram/client"); await destroyClient(userId); } catch {}
+      return NextResponse.json({ error: "AUTH_KEY_DUPLICATED: попробуй снова через 2с" }, { status: 429, headers: { "Retry-After": "2" } });
+    }
     const fw = isFloodWaitError(e);
     if (fw) return NextResponse.json({ error: `Флуд-контроль: подожди ${fw}с` }, { status: 429, headers: { "Retry-After": String(fw) } });
-    const msg = e?.errorMessage || e?.message || "Failed";
     if (msg.includes("CHAT_WRITE_FORBIDDEN") || msg.includes("CHAT_RESTRICTED")) {
       return NextResponse.json({ error: "В этом канале нельзя писать" }, { status: 403 });
     }
