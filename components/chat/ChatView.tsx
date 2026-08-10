@@ -3,7 +3,6 @@ import { useEffect, useState, useRef, useCallback, memo } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import type { Dialog } from "../Messenger";
 import { putMessages, getMessagesCache } from "@/lib/db";
-import { putMessages, getMessagesCache } from "@/lib/db";
 
 type Msg = {
   id: number;
