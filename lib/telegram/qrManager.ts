@@ -28,7 +28,7 @@ function genId() {
 
 export function createQrSession(): QrSession {
   const id = genId();
-  const client = new TelegramClient(new StringSession(""), Number(process.env.API_ID), Number(process.env.API_HASH), {
+  const client = new TelegramClient(new StringSession(""), Number(process.env.API_ID), process.env.API_HASH as string, {
     connectionRetries: 5,
     useWSS: true,
   });
