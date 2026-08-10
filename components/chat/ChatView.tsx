@@ -20,6 +20,7 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
   const [messages, setMessages] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [sending, setSending] = useState(false);
@@ -35,16 +36,26 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
 
   const loadInitial = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const res = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=40`);
-      const data = await res.json();
-      if (res.ok) {
-        setMessages(data.messages || []);
-        setHasMore(!!data.hasMore);
-        firstItemIndexRef.current = 10000 - (data.messages?.length || 0);
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=40`, { signal: controller.signal, cache: "no-store" });
+      clearTimeout(t);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) { location.href = "/login"; return; }
+        throw new Error(data.error || `Ошибка ${res.status}`);
       }
-    } catch {}
-    setLoading(false);
+      setMessages(data.messages || []);
+      setHasMore(!!data.hasMore);
+      firstItemIndexRef.current = 10000 - (data.messages?.length || 0);
+    } catch (e: any) {
+      const msg = e?.name === "AbortError" ? "Превышено время ожидания" : e?.message || "Не удалось загрузить сообщения";
+      setLoadError(msg);
+    } finally {
+      setLoading(false);
+    }
   }, [dialog.id]);
 
   const loadMore = useCallback(async () => {
@@ -52,9 +63,13 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
     setLoadingMore(true);
     try {
       const oldestId = messages[0]?.id;
-      const res = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=40&offsetId=${oldestId}`);
-      const data = await res.json();
-      if (res.ok && data.messages?.length) {
+      const res = await fetch(`/api/telegram/messages?chatId=${encodeURIComponent(dialog.id)}&limit=40&offsetId=${oldestId}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 429) throw new Error(data.error || "Слишком часто, подожди");
+        throw new Error(data.error || "Ошибка подгрузки");
+      }
+      if (data.messages?.length) {
         const older: Msg[] = data.messages;
         setMessages(prev => [...older, ...prev]);
         setHasMore(!!data.hasMore);
@@ -62,8 +77,12 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
       } else {
         setHasMore(false);
       }
-    } catch {}
-    setLoadingMore(false);
+    } catch (e: any) {
+      // тихо, не спамим
+      console.warn("loadMore failed", e?.message);
+    } finally {
+      setLoadingMore(false);
+    }
   }, [dialog.id, messages, hasMore, loadingMore]);
 
   // Poll for new messages (only tail)
@@ -207,7 +226,18 @@ export default function ChatView({ dialog, onBack }: { dialog: Dialog; onBack?: 
         )}
 
         {loading ? (
-          <div className="absolute inset-0 flex items-center justify-center"><div className="bg-white dark:bg-[#17212b] rounded-full px-4 py-2 shadow-sm text-sm text-[#8e8e93]">Загрузка...</div></div>
+          <div className="absolute inset-0 flex items-center justify-center"><div className="bg-white dark:bg-[#17212b] rounded-full px-4 py-2 shadow-sm text-sm text-[#8e8e93] animate-pulse">Загрузка...</div></div>
+        ) : loadError ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
+            <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center text-red-500 text-xl mb-3">!</div>
+            <div className="text-[14px] font-medium text-[#0f1419] dark:text-white">Не удалось загрузить</div>
+            <div className="text-[12px] text-[#8e8e93] dark:text-[#7d8b99] mt-1 max-w-[300px] break-words">{loadError}</div>
+            <div className="flex gap-2 mt-4">
+              <button onClick={loadInitial} className="px-4 py-2 rounded-full bg-[#0a84ff] text-white text-sm font-medium active:scale-95">Попробовать снова</button>
+              <button onClick={() => { setLoadError(null); setHasMore(true); loadInitial(); }} className="px-4 py-2 rounded-full bg-black/5 dark:bg-white/10 text-sm">Обновить</button>
+            </div>
+            <div className="text-[11px] text-[#8e8e93] mt-3">Если ошибка повторяется — попробуй выйти и войти снова, или проверь связь с Telegram</div>
+          </div>
         ) : messages.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
             <div className="w-20 h-20 rounded-full bg-white dark:bg-[#17212b] shadow-sm flex items-center justify-center text-3xl mb-3">💬</div>

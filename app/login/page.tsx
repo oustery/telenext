@@ -45,6 +45,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const [hydrated, setHydrated] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   // QR state
   const [qrUrl, setQrUrl] = useState<string | null>(null);
@@ -53,8 +54,29 @@ export default function LoginPage() {
   const [qrPassword, setQrPassword] = useState("");
   const pollRef = useRef<number | null>(null);
 
+  // 0) Если уже залогинен — сразу на /
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then(async (r) => {
+        if (cancelled) return;
+        if (r.ok) {
+          const data = await r.json();
+          if (data.authenticated) {
+            clearSavedState();
+            router.replace("/");
+            return;
+          }
+        }
+        setCheckingAuth(false);
+      })
+      .catch(() => setCheckingAuth(false));
+    return () => { cancelled = true; };
+  }, [router]);
+
   // 1) Гидратация: восстанавливаем состояние после переключения приложения / перезагрузки
   useEffect(() => {
+    if (checkingAuth) return;
     const saved = loadSavedState();
     if (saved) {
       if (saved.tab) setTab(saved.tab);
@@ -83,7 +105,7 @@ export default function LoginPage() {
       window.removeEventListener("pageshow", onVisibility);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [checkingAuth]);
 
   // 2) Сохраняем при каждом изменении важных полей (только после гидратации)
   useEffect(() => {
@@ -251,8 +273,8 @@ export default function LoginPage() {
     setError(null);
   }
 
-  // Пока не гидрировали — показываем лоадер чтобы не мелькал сброс
-  if (!hydrated) {
+  // Пока проверяем сессию или не гидрировали — показываем лоадер чтобы не мелькал сброс
+  if (checkingAuth || !hydrated) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#17212b] p-4">
         <div className="text-[#5a6d7e] text-sm">Загрузка...</div>
