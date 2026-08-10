@@ -24,7 +24,7 @@
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "tailwind-merge": "^2.6.0",
-    "telegram": "^2.22.2",
+    "telegram": "2.22.2",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
